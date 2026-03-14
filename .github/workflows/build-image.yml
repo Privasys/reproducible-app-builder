@@ -32,6 +32,8 @@ jobs:
         with:
           context: .
           push: true
+          secrets: |
+            github_token=${{ secrets.GH_PAT }}
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}

@@ -1,10 +1,13 @@
+# syntax=docker/dockerfile:1
+#
 # Pre-built builder image for cwasm-builder GitHub Actions workflow.
 # Contains: Rust toolchain, cargo-component, wasm targets, and the
 # enclave-os-wasm-compile binary — ready to compile adopter apps
 # without any setup time.
 #
 # Rebuild when the Wasmtime fork or engine config changes:
-#   docker build -t ghcr.io/privasys/cwasm-builder:latest .
+#   docker build --secret id=github_token,env=GH_PAT \
+#     -t ghcr.io/privasys/cwasm-builder:latest .
 #   docker push ghcr.io/privasys/cwasm-builder:latest
 
 FROM rust:1.87-bookworm AS build
@@ -15,10 +18,14 @@ RUN rustup target add wasm32-wasip1 wasm32-wasip2
 # Install cargo-component
 RUN cargo install cargo-component
 
-# Copy and build the AOT compiler
+# Copy and build the AOT compiler (needs access to private Privasys/wasmtime fork)
 COPY compile/ /compiler/
 WORKDIR /compiler
-RUN cargo build --release
+RUN --mount=type=secret,id=github_token \
+    if [ -f /run/secrets/github_token ]; then \
+      git config --global url."https://x-access-token:$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
+    fi && \
+    CARGO_NET_GIT_FETCH_WITH_CLI=true cargo build --release
 
 # ---------------------------------------------------------------------------
 # Runtime image — slim, with only what's needed to build adopter apps
