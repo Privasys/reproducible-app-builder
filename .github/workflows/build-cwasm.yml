@@ -36,10 +36,23 @@ jobs:
               "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             }' || true
 
+      - name: Cache builder image
+        id: cache-image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/builder-image.tar
+          key: cwasm-builder-${{ hashFiles('.github/workflows/build-image.yml') }}
+
+      - name: Load cached image
+        if: steps.cache-image.outputs.cache-hit == 'true'
+        run: docker load -i /tmp/builder-image.tar
+
       - name: Pull builder image
+        if: steps.cache-image.outputs.cache-hit != 'true'
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin 2>/dev/null
           docker pull ghcr.io/privasys/cwasm-builder:latest
+          docker save ghcr.io/privasys/cwasm-builder:latest -o /tmp/builder-image.tar
 
       - name: Checkout adopter repo
         uses: actions/checkout@v5
