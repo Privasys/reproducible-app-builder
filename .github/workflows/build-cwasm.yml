@@ -23,11 +23,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/privasys/cwasm-builder:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 15
     steps:
       - name: Notify running
@@ -41,27 +36,34 @@ jobs:
               "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             }' || true
 
+      - name: Pull builder image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull ghcr.io/privasys/cwasm-builder:latest
+
       - name: Checkout adopter repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ inputs.repo_url }}
           ref: ${{ inputs.commit }}
           path: app
 
       - name: Build WASM component
-        working-directory: app
         run: |
-          # Try cargo-component first; fall back to plain cargo build for wasip1/wasip2
-          if cargo component build --release 2>&1; then
-            echo "Built with cargo-component"
-          elif cargo build --release --target wasm32-wasip2 2>&1; then
-            echo "Built with cargo build (wasm32-wasip2)"
-          elif cargo build --release --target wasm32-wasip1 2>&1; then
-            echo "Built with cargo build (wasm32-wasip1)"
-          else
-            echo "::error::All build methods failed"
-            exit 1
-          fi
+          docker run --rm -v "${{ github.workspace }}/app:/work" -w /work \
+            ghcr.io/privasys/cwasm-builder:latest \
+            sh -c '
+              if cargo component build --release 2>&1; then
+                echo "Built with cargo-component"
+              elif cargo build --release --target wasm32-wasip2 2>&1; then
+                echo "Built with cargo build (wasm32-wasip2)"
+              elif cargo build --release --target wasm32-wasip1 2>&1; then
+                echo "Built with cargo build (wasm32-wasip1)"
+              else
+                echo "::error::All build methods failed"
+                exit 1
+              fi
+            '
 
       - name: Find .wasm artifact
         id: find-wasm
@@ -77,9 +79,12 @@ jobs:
 
       - name: AOT compile to .cwasm
         run: |
-          enclave-os-wasm-compile \
-            "app/${{ steps.find-wasm.outputs.wasm_file }}" \
-            -o output.cwasm
+          docker run --rm \
+            -v "${{ github.workspace }}/app:/work" \
+            -v "${{ github.workspace }}:/out" \
+            -w /work \
+            ghcr.io/privasys/cwasm-builder:latest \
+            enclave-os-wasm-compile "/work/${{ steps.find-wasm.outputs.wasm_file }}" -o /out/output.cwasm
 
       - name: Upload .cwasm artifact
         uses: actions/upload-artifact@v4
