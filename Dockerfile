@@ -15,11 +15,9 @@ FROM rust:1.87-bookworm AS build
 # Install wasm targets
 RUN rustup target add wasm32-wasip1 wasm32-wasip2
 
-# Install cargo-component (pre-built binary — compiling from source fails on CI)
-ARG CARGO_COMPONENT_VERSION=0.21.1
-RUN curl -sSfL "https://github.com/bytecodealliance/cargo-component/releases/download/v${CARGO_COMPONENT_VERSION}/cargo-component-x86_64-unknown-linux-gnu" \
-    -o /usr/local/cargo/bin/cargo-component && \
-    chmod +x /usr/local/cargo/bin/cargo-component
+# Install cargo-binstall, then use it to install cargo-component (avoids source compilation)
+RUN curl -sSfL https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+RUN cargo binstall cargo-component --no-confirm
 
 # Copy and build the AOT compiler (needs access to private Privasys/wasmtime fork)
 COPY compile/ /compiler/
