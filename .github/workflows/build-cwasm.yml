@@ -1,0 +1,128 @@
+name: Build .cwasm
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: "Adopter's GitHub repository (owner/repo)"
+        required: true
+        type: string
+      commit:
+        description: "Full commit SHA to build"
+        required: true
+        type: string
+      build_id:
+        description: "Management service build job ID"
+        required: true
+        type: string
+      callback_url:
+        description: "URL to POST build results to"
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Notify running
+        run: |
+          curl -sf -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "build_id": "${{ inputs.build_id }}",
+              "status": "running",
+              "run_id": ${{ github.run_id }},
+              "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }' || true
+
+      - name: Install Rust toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add wasm32-wasip1 wasm32-wasip2
+
+      - name: Install cargo-component
+        run: cargo install cargo-component
+
+      - name: Checkout compiler tool
+        uses: actions/checkout@v4
+        with:
+          path: compiler
+
+      - name: Build enclave-os-wasm-compile
+        working-directory: compiler/compile
+        run: cargo build --release
+
+      - name: Checkout adopter repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repo_url }}
+          ref: ${{ inputs.commit }}
+          path: app
+
+      - name: Build WASM component
+        working-directory: app
+        run: cargo component build --release
+
+      - name: Find .wasm artifact
+        id: find-wasm
+        working-directory: app
+        run: |
+          WASM_FILE=$(find target/wasm32-wasip1/release target/wasm32-wasip2/release -name '*.wasm' -not -name '*.d' 2>/dev/null | head -1)
+          if [ -z "$WASM_FILE" ]; then
+            echo "::error::No .wasm file found in release output"
+            exit 1
+          fi
+          echo "wasm_file=$WASM_FILE" >> "$GITHUB_OUTPUT"
+          echo "Found: $WASM_FILE"
+
+      - name: AOT compile to .cwasm
+        run: |
+          ./compiler/compile/target/release/enclave-os-wasm-compile \
+            "app/${{ steps.find-wasm.outputs.wasm_file }}" \
+            -o output.cwasm
+
+      - name: Upload .cwasm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cwasm-${{ inputs.build_id }}
+          path: output.cwasm
+          retention-days: 30
+
+      - name: Compute SHA-256
+        id: hash
+        run: |
+          HASH=$(sha256sum output.cwasm | cut -d' ' -f1)
+          SIZE=$(stat -c%s output.cwasm)
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "SHA-256: $HASH  Size: $SIZE bytes"
+
+      - name: Notify success
+        if: success()
+        run: |
+          ARTIFACT_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -sf -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"build_id\": \"${{ inputs.build_id }}\",
+              \"status\": \"success\",
+              \"run_id\": ${{ github.run_id }},
+              \"run_url\": \"$ARTIFACT_URL\",
+              \"cwasm_hash\": \"${{ steps.hash.outputs.hash }}\",
+              \"cwasm_size\": ${{ steps.hash.outputs.size }}
+            }"
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          curl -sf -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "build_id": "${{ inputs.build_id }}",
+              "status": "failed",
+              "run_id": ${{ github.run_id }},
+              "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "error": "Build failed — check the workflow run for details"
+            }' || true
