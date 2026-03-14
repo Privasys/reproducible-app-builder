@@ -11,6 +11,7 @@
 #   docker push ghcr.io/privasys/cwasm-builder:latest
 
 FROM rust:1.87-bookworm AS build
+RUN rustup update stable && rustup default stable
 
 # Install wasm targets
 RUN rustup target add wasm32-wasip1 wasm32-wasip2
@@ -32,6 +33,7 @@ RUN --mount=type=secret,id=github_token \
 # Runtime image — slim, with only what's needed to build adopter apps
 # ---------------------------------------------------------------------------
 FROM rust:1.87-slim-bookworm
+RUN rustup update stable && rustup default stable
 
 # Install git (needed for cargo to fetch dependencies) and minimal tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
