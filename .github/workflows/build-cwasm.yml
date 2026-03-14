@@ -23,7 +23,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    container:
+      image: ghcr.io/privasys/cwasm-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 15
     steps:
       - name: Notify running
         run: |
@@ -36,24 +41,6 @@ jobs:
               "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             }' || true
 
-      - name: Install Rust toolchain
-        run: |
-          rustup update stable
-          rustup default stable
-          rustup target add wasm32-wasip1 wasm32-wasip2
-
-      - name: Install cargo-component
-        run: cargo install cargo-component
-
-      - name: Checkout compiler tool
-        uses: actions/checkout@v4
-        with:
-          path: compiler
-
-      - name: Build enclave-os-wasm-compile
-        working-directory: compiler/compile
-        run: cargo build --release
-
       - name: Checkout adopter repo
         uses: actions/checkout@v4
         with:
@@ -63,13 +50,24 @@ jobs:
 
       - name: Build WASM component
         working-directory: app
-        run: cargo component build --release
+        run: |
+          # Try cargo-component first; fall back to plain cargo build for wasip1/wasip2
+          if cargo component build --release 2>&1; then
+            echo "Built with cargo-component"
+          elif cargo build --release --target wasm32-wasip2 2>&1; then
+            echo "Built with cargo build (wasm32-wasip2)"
+          elif cargo build --release --target wasm32-wasip1 2>&1; then
+            echo "Built with cargo build (wasm32-wasip1)"
+          else
+            echo "::error::All build methods failed"
+            exit 1
+          fi
 
       - name: Find .wasm artifact
         id: find-wasm
         working-directory: app
         run: |
-          WASM_FILE=$(find target/wasm32-wasip1/release target/wasm32-wasip2/release -name '*.wasm' -not -name '*.d' 2>/dev/null | head -1)
+          WASM_FILE=$(find target -name '*.wasm' -path '*/release/*' -not -name '*.d' -not -name 'deps' 2>/dev/null | head -1)
           if [ -z "$WASM_FILE" ]; then
             echo "::error::No .wasm file found in release output"
             exit 1
@@ -79,7 +77,7 @@ jobs:
 
       - name: AOT compile to .cwasm
         run: |
-          ./compiler/compile/target/release/enclave-os-wasm-compile \
+          enclave-os-wasm-compile \
             "app/${{ steps.find-wasm.outputs.wasm_file }}" \
             -o output.cwasm
 

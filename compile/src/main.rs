@@ -109,8 +109,31 @@ fn main() {
 
     // AOT compile
     eprintln!("Compiling...");
+
+    // Detect whether the input is a Component or a core Module.
+    // Component Model binaries start with the component preamble:
+    // \0asm followed by the component layer version (0d 00 01 00).
+    // Core modules start with \0asm followed by (01 00 00 00).
+    let is_component = wasm_bytes.len() >= 8
+        && wasm_bytes[0..4] == [0x00, 0x61, 0x73, 0x6d]
+        && wasm_bytes[4] != 0x01; // component layer version != 1
+
+    if !is_component {
+        eprintln!("Note: input appears to be a core WASM module, not a Component.");
+        eprintln!("      Enclave OS requires Component Model binaries.");
+        eprintln!("      Build with `cargo component build` or wrap the module.");
+    }
+
     let cwasm = engine.precompile_component(&wasm_bytes).unwrap_or_else(|e| {
         eprintln!("error: compilation failed: {}", e);
+        if !is_component {
+            eprintln!();
+            eprintln!("hint: The input file is a core WebAssembly module, not a Component.");
+            eprintln!("      Enclave OS uses the Component Model. Ensure your project:");
+            eprintln!("      1. Has a wit/ directory with world definitions");
+            eprintln!("      2. Is built with `cargo component build --release`");
+            eprintln!("      3. Targets wasm32-wasip1 or wasm32-wasip2");
+        }
         std::process::exit(1);
     });
 
