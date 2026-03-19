@@ -33,21 +33,26 @@ RUN --mount=type=secret,id=github_token \
 # Runtime image — slim, with only what's needed to build adopter apps
 # ---------------------------------------------------------------------------
 FROM rust:1.87-slim-bookworm
-RUN rustup update stable && rustup default stable
 
 # Install git (needed for cargo to fetch dependencies) and minimal tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy toolchain additions from build stage
-COPY --from=build /usr/local/rustup/toolchains/ /usr/local/rustup/toolchains/
-COPY --from=build /usr/local/cargo/bin/cargo-component /usr/local/cargo/bin/cargo-component
-
-# Copy wasm targets
+# Install wasm targets and cargo-component (small additions to the base toolchain)
 RUN rustup target add wasm32-wasip1 wasm32-wasip2
+RUN curl -sSfL https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash \
+    && cargo binstall cargo-component --no-confirm
 
-# Copy the pre-built AOT compiler
+# Copy only the pre-built AOT compiler binary (~10MB)
 COPY --from=build /compiler/target/release/enclave-os-wasm-compile /usr/local/bin/enclave-os-wasm-compile
+
+# Strip debug symbols and unnecessary toolchain components to reduce image size
+RUN strip /usr/local/bin/enclave-os-wasm-compile 2>/dev/null || true \
+    && rm -rf /usr/local/rustup/toolchains/*/share/doc \
+              /usr/local/rustup/toolchains/*/share/man \
+              /usr/local/cargo/registry \
+              /usr/local/cargo/git \
+              /tmp/*
 
 WORKDIR /workspace
