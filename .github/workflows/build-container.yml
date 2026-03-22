@@ -1,0 +1,103 @@
+name: Build container image
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: "Adopter's GitHub repository (owner/repo)"
+        required: true
+        type: string
+      commit:
+        description: "Full commit SHA to build"
+        required: true
+        type: string
+      build_id:
+        description: "Management service build job ID"
+        required: true
+        type: string
+      callback_url:
+        description: "URL to POST build results to"
+        required: true
+        type: string
+      app_name:
+        description: "Application name (used for image tag)"
+        required: true
+        type: string
+
+permissions:
+  packages: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Notify running
+        run: |
+          curl -sf -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "build_id": "${{ inputs.build_id }}",
+              "status": "running",
+              "run_id": ${{ github.run_id }},
+              "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }' || true
+
+      - name: Checkout app repository
+        run: |
+          git clone --depth 1 --branch "${{ inputs.commit }}" \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ inputs.repo_url }}.git" app 2>/dev/null \
+          || {
+            git clone "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ inputs.repo_url }}.git" app
+            cd app && git checkout "${{ inputs.commit }}" && cd ..
+          }
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push container image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          push: true
+          tags: ghcr.io/privasys/apps/${{ inputs.app_name }}:${{ inputs.commit }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ inputs.repo_url }}
+            org.opencontainers.image.revision=${{ inputs.commit }}
+
+      - name: Notify success
+        if: success()
+        run: |
+          IMAGE="ghcr.io/privasys/apps/${{ inputs.app_name }}:${{ inputs.commit }}"
+          DIGEST="${{ steps.build.outputs.digest }}"
+          curl -sf -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"build_id\": \"${{ inputs.build_id }}\",
+              \"status\": \"success\",
+              \"run_id\": ${{ github.run_id }},
+              \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
+              \"container_image\": \"${IMAGE}@${DIGEST}\"
+            }"
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          curl -sf -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "build_id": "${{ inputs.build_id }}",
+              "status": "failed",
+              "run_id": ${{ github.run_id }},
+              "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "error": "Container build failed — check the workflow run for details"
+            }' || true
