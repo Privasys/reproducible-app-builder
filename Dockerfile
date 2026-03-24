@@ -16,9 +16,10 @@ RUN rustup update stable && rustup default stable
 # Install wasm targets
 RUN rustup target add wasm32-wasip1 wasm32-wasip2
 
-# Install cargo-binstall, then use it to install cargo-component (avoids source compilation)
+# Install cargo-binstall, then use it to install cargo-component (avoids source compilation).
+# Pin to a specific version so that WIT features (top-level enums, records) are supported.
 RUN curl -sSfL https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-RUN cargo binstall cargo-component --no-confirm
+RUN cargo binstall cargo-component@0.21.1 --no-confirm
 
 # Copy and build the AOT compiler (needs access to private Privasys/wasmtime fork)
 COPY compile/ /compiler/
@@ -39,10 +40,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Install wasm targets and cargo-component (small additions to the base toolchain)
+# Install wasm targets and cargo-component (small additions to the base toolchain).
+# Pin version to match the build stage.
 RUN rustup target add wasm32-wasip1 wasm32-wasip2
 RUN curl -sSfL https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash \
-    && cargo binstall cargo-component --no-confirm
+    && cargo binstall cargo-component@0.21.1 --no-confirm
 
 # Copy only the pre-built AOT compiler binary (~10MB)
 COPY --from=build /compiler/target/release/enclave-os-wasm-compile /usr/local/bin/enclave-os-wasm-compile
