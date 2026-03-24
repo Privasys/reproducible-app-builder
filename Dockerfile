@@ -46,6 +46,14 @@ RUN rustup target add wasm32-wasip1 wasm32-wasip2
 RUN curl -sSfL https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash \
     && cargo binstall cargo-component@0.21.1 --no-confirm
 
+# Install Python 3 for the WIT doc-comment injection script
+RUN apt-get update && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the WIT doc injection script
+COPY scripts/inject-wit-docs.py /usr/local/bin/inject-wit-docs.py
+RUN chmod +x /usr/local/bin/inject-wit-docs.py
+
 # Copy only the pre-built AOT compiler binary (~10MB)
 COPY --from=build /compiler/target/release/enclave-os-wasm-compile /usr/local/bin/enclave-os-wasm-compile
 

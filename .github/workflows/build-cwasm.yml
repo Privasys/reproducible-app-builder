@@ -78,6 +78,21 @@ jobs:
           echo "wasm_file=$WASM_FILE" >> "$GITHUB_OUTPUT"
           echo "Found: $WASM_FILE"
 
+      - name: Inject WIT doc comments
+        run: |
+          # Find the wit/ directory in the repo root (standard convention)
+          WIT_DIR="${{ github.workspace }}/app/wit"
+          if [ ! -d "$WIT_DIR" ]; then
+            echo "No wit/ directory found — skipping doc injection"
+            exit 0
+          fi
+          echo "Injecting WIT docs from $WIT_DIR into ${{ steps.find-wasm.outputs.wasm_file }}"
+          docker run --rm \
+            -v "${{ github.workspace }}/app:/work" \
+            -w /work \
+            ghcr.io/privasys/cwasm-builder:latest \
+            python3 /usr/local/bin/inject-wit-docs.py /work/wit "/work/${{ steps.find-wasm.outputs.wasm_file }}"
+
       - name: AOT compile to .cwasm
         run: |
           docker run --rm \
