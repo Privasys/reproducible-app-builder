@@ -85,7 +85,6 @@ jobs:
           WIT_DIR="${{ github.workspace }}/app/wit"
           if [ ! -d "$WIT_DIR" ]; then
             echo "No wit/ directory found — skipping doc injection"
-            echo 'docs_json=' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "Injecting WIT docs from $WIT_DIR into ${{ steps.find-wasm.outputs.wasm_file }}"
@@ -95,13 +94,6 @@ jobs:
             -w /work \
             ghcr.io/privasys/cwasm-builder:latest \
             python3 /usr/local/bin/inject-wit-docs.py /work/wit "/work/${{ steps.find-wasm.outputs.wasm_file }}" --output-json /out/docs.json
-          if [ -f "${{ github.workspace }}/docs.json" ]; then
-            # Compact JSON on one line for the callback payload
-            DOCS=$(cat "${{ github.workspace }}/docs.json" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin), separators=(',',':')))")
-            echo "docs_json=$DOCS" >> "$GITHUB_OUTPUT"
-          else
-            echo 'docs_json=' >> "$GITHUB_OUTPUT"
-          fi
 
       - name: AOT compile to .cwasm
         run: |
@@ -132,22 +124,29 @@ jobs:
         if: success()
         run: |
           ARTIFACT_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          DOCS_JSON='${{ steps.inject-docs.outputs.docs_json }}'
-          if [ -n "$DOCS_JSON" ]; then
-            DOCS_FIELD=",\"docs\":$DOCS_JSON"
-          else
-            DOCS_FIELD=""
-          fi
+          DOCS_FILE="${{ github.workspace }}/docs.json"
+          python3 -c "
+          import json, sys
+          payload = {
+              'build_id': '${{ inputs.build_id }}',
+              'status': 'success',
+              'run_id': ${{ github.run_id }},
+              'run_url': '$ARTIFACT_URL',
+              'cwasm_hash': '${{ steps.hash.outputs.hash }}',
+              'cwasm_size': ${{ steps.hash.outputs.size }}
+          }
+          docs_file = '$DOCS_FILE'
+          try:
+              with open(docs_file) as f:
+                  payload['docs'] = json.load(f)
+          except FileNotFoundError:
+              pass
+          json.dump(payload, sys.stdout, ensure_ascii=False)
+          " > /tmp/callback.json
+          cat /tmp/callback.json
           curl -sf -X POST "${{ inputs.callback_url }}" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"build_id\": \"${{ inputs.build_id }}\",
-              \"status\": \"success\",
-              \"run_id\": ${{ github.run_id }},
-              \"run_url\": \"$ARTIFACT_URL\",
-              \"cwasm_hash\": \"${{ steps.hash.outputs.hash }}\",
-              \"cwasm_size\": ${{ steps.hash.outputs.size }}$DOCS_FIELD
-            }"
+            -d @/tmp/callback.json
 
       - name: Notify failure
         if: failure()
