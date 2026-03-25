@@ -150,7 +150,7 @@ def inject_package_docs(wasm_path: Path, docs: dict[str, str], output_path: Path
 
 def main() -> None:
     if len(sys.argv) < 3:
-        print(f"Usage: {sys.argv[0]} <wit-dir> <wasm-file> [--output <output-file>]", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} <wit-dir> <wasm-file> [--output <output-file>] [--output-json <json-file>]", file=sys.stderr)
         sys.exit(1)
 
     wit_dir = Path(sys.argv[1])
@@ -161,6 +161,12 @@ def main() -> None:
         idx = sys.argv.index("--output")
         if idx + 1 < len(sys.argv):
             output_path = Path(sys.argv[idx + 1])
+
+    json_output_path: Path | None = None
+    if "--output-json" in sys.argv:
+        idx = sys.argv.index("--output-json")
+        if idx + 1 < len(sys.argv):
+            json_output_path = Path(sys.argv[idx + 1])
 
     if not wit_dir.is_dir():
         print(f"Error: WIT directory not found: {wit_dir}", file=sys.stderr)
@@ -189,6 +195,14 @@ def main() -> None:
 
     inject_package_docs(wasm_path, all_docs, output_path)
     print(f"\nInjected package-docs section into {output_path}")
+
+    # Also write standalone JSON file if requested
+    if json_output_path:
+        json_output_path.write_text(
+            json.dumps(all_docs, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"Wrote docs JSON to {json_output_path}")
 
 
 if __name__ == "__main__":

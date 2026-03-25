@@ -79,19 +79,29 @@ jobs:
           echo "Found: $WASM_FILE"
 
       - name: Inject WIT doc comments
+        id: inject-docs
         run: |
           # Find the wit/ directory in the repo root (standard convention)
           WIT_DIR="${{ github.workspace }}/app/wit"
           if [ ! -d "$WIT_DIR" ]; then
             echo "No wit/ directory found — skipping doc injection"
+            echo 'docs_json=' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "Injecting WIT docs from $WIT_DIR into ${{ steps.find-wasm.outputs.wasm_file }}"
           docker run --rm \
             -v "${{ github.workspace }}/app:/work" \
+            -v "${{ github.workspace }}:/out" \
             -w /work \
             ghcr.io/privasys/cwasm-builder:latest \
-            python3 /usr/local/bin/inject-wit-docs.py /work/wit "/work/${{ steps.find-wasm.outputs.wasm_file }}"
+            python3 /usr/local/bin/inject-wit-docs.py /work/wit "/work/${{ steps.find-wasm.outputs.wasm_file }}" --output-json /out/docs.json
+          if [ -f "${{ github.workspace }}/docs.json" ]; then
+            # Compact JSON on one line for the callback payload
+            DOCS=$(cat "${{ github.workspace }}/docs.json" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin), separators=(',',':')))")
+            echo "docs_json=$DOCS" >> "$GITHUB_OUTPUT"
+          else
+            echo 'docs_json=' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: AOT compile to .cwasm
         run: |
@@ -122,6 +132,12 @@ jobs:
         if: success()
         run: |
           ARTIFACT_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          DOCS_JSON='${{ steps.inject-docs.outputs.docs_json }}'
+          if [ -n "$DOCS_JSON" ]; then
+            DOCS_FIELD=",\"docs\":$DOCS_JSON"
+          else
+            DOCS_FIELD=""
+          fi
           curl -sf -X POST "${{ inputs.callback_url }}" \
             -H "Content-Type: application/json" \
             -d "{
@@ -130,7 +146,7 @@ jobs:
               \"run_id\": ${{ github.run_id }},
               \"run_url\": \"$ARTIFACT_URL\",
               \"cwasm_hash\": \"${{ steps.hash.outputs.hash }}\",
-              \"cwasm_size\": ${{ steps.hash.outputs.size }}
+              \"cwasm_size\": ${{ steps.hash.outputs.size }}$DOCS_FIELD
             }"
 
       - name: Notify failure
