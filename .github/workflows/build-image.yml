@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'compile/**'
+      - 'scripts/**'
       - 'Dockerfile'
   workflow_dispatch:
 
