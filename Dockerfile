@@ -1,14 +1,14 @@
 # syntax=docker/dockerfile:1
 #
-# Pre-built builder image for cwasm-builder GitHub Actions workflow.
+# Pre-built builder image for reproducible-app-builder GitHub Actions workflow.
 # Contains: Rust toolchain, cargo-component, wasm targets, and the
 # enclave-os-wasm-compile binary — ready to compile adopter apps
 # without any setup time.
 #
 # Rebuild when the Wasmtime fork or engine config changes:
 #   docker build --secret id=github_token,env=GH_PAT \
-#     -t ghcr.io/privasys/cwasm-builder:latest .
-#   docker push ghcr.io/privasys/cwasm-builder:latest
+#     -t ghcr.io/privasys/reproducible-app-builder:latest .
+#   docker push ghcr.io/privasys/reproducible-app-builder:latest
 
 FROM rust:1.87-bookworm AS build
 RUN rustup update stable && rustup default stable

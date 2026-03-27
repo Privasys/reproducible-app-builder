@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE: ghcr.io/privasys/cwasm-builder
+  IMAGE: ghcr.io/privasys/reproducible-app-builder
 
 jobs:
   build-image:

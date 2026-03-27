@@ -39,7 +39,7 @@ jobs:
       - name: Pull builder image & checkout (parallel)
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin 2>/dev/null
-          docker pull ghcr.io/privasys/cwasm-builder:latest &
+          docker pull ghcr.io/privasys/reproducible-app-builder:latest &
           PULL_PID=$!
           git clone --depth 1 --branch "${{ inputs.commit }}" \
             "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ inputs.repo_url }}.git" app 2>/dev/null \
@@ -52,7 +52,7 @@ jobs:
       - name: Build WASM component
         run: |
           docker run --rm -v "${{ github.workspace }}/app:/work" -w /work \
-            ghcr.io/privasys/cwasm-builder:latest \
+            ghcr.io/privasys/reproducible-app-builder:latest \
             sh -c '
               if cargo component build --release 2>&1; then
                 echo "Built with cargo-component"
@@ -92,7 +92,7 @@ jobs:
             -v "${{ github.workspace }}/app:/work" \
             -v "${{ github.workspace }}:/out" \
             -w /work \
-            ghcr.io/privasys/cwasm-builder:latest \
+            ghcr.io/privasys/reproducible-app-builder:latest \
             python3 /usr/local/bin/inject-wit-docs.py /work/wit "/work/${{ steps.find-wasm.outputs.wasm_file }}" --output-json /out/docs.json
 
       - name: AOT compile to .cwasm
@@ -101,7 +101,7 @@ jobs:
             -v "${{ github.workspace }}/app:/work" \
             -v "${{ github.workspace }}:/out" \
             -w /work \
-            ghcr.io/privasys/cwasm-builder:latest \
+            ghcr.io/privasys/reproducible-app-builder:latest \
             enclave-os-wasm-compile "/work/${{ steps.find-wasm.outputs.wasm_file }}" -o /out/output.cwasm
 
       - name: Upload .cwasm artifact

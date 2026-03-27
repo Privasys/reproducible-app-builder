@@ -7,4 +7,4 @@ in enclave-os-mini, please report it responsibly through one of the
 following channels:
 
 - **Email:** [security@privasys.org](mailto:security@privasys.org)
-- **GitHub:** Open a [private security advisory](https://github.com/Privasys/cwasm-builder/security/advisories/new)
+- **GitHub:** Open a [private security advisory](https://github.com/Privasys/reproducible-app-builder/security/advisories/new)
