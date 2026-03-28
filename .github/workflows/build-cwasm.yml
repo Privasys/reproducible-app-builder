@@ -119,6 +119,13 @@ jobs:
           echo "hash=$HASH" >> "$GITHUB_OUTPUT"
           echo "size=$SIZE" >> "$GITHUB_OUTPUT"
           echo "SHA-256: $HASH  Size: $SIZE bytes"
+          echo "## Reproducible Build" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **WASM module SHA-256** | \`$HASH\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Size** | $SIZE bytes |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Commit** | [${{ inputs.commit }}](https://github.com/${{ inputs.repo_url }}/commit/${{ inputs.commit }}) |" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Notify success
         if: success()

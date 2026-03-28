@@ -74,6 +74,18 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ inputs.repo_url }}
             org.opencontainers.image.revision=${{ inputs.commit }}
 
+      - name: Build summary
+        if: success()
+        run: |
+          DIGEST="${{ steps.build.outputs.digest }}"
+          echo "## Reproducible Build" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Container image digest** | \`${DIGEST}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Image** | \`ghcr.io/privasys/apps/${{ inputs.app_name }}:${{ inputs.commit }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Commit** | [${{ inputs.commit }}](https://github.com/${{ inputs.repo_url }}/commit/${{ inputs.commit }}) |" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Notify success
         if: success()
         run: |
