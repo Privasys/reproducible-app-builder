@@ -4,7 +4,8 @@
 cargo-component doesn't embed /// doc comments from WIT files into the
 compiled WASM binary. Enclave OS reads a `package-docs` custom section
 (flat JSON map) to surface function and parameter descriptions in the
-MCP tool manifest.
+MCP tool manifest, and to derive per-function auth policy from @auth
+annotations.
 
 Usage:
     python inject-wit-docs.py <wit-dir> <wasm-file> [--output <output-file>]
@@ -12,12 +13,24 @@ Usage:
 The script parses every .wit file under <wit-dir> and extracts:
   - export func descriptions           ("func-name"       -> func doc)
   - inline parameter descriptions      ("func-name.param" -> param doc)
+  - @auth annotations on exports       ("auth:func-name"  -> policy)
+  - @default-auth on world definition  ("auth:__default__" -> policy)
 
 Plain // comments (e.g. section dividers) are ignored — only /// is captured.
+
+@auth annotation syntax (in /// doc comments):
+  /// @auth public           — no authentication required
+  /// @auth authenticated    — any authenticated caller
+  /// @auth role(role-name)  — caller must have the named role(s)
+
+@default-auth sets the world-level default for unannotated exports:
+  /// @default-auth authenticated
 
 The output JSON uses flat keys consumed by normalise_package_docs():
   "func-name"         -> function description    (normalised to func:func-name)
   "func-name.param"   -> parameter description   (normalised to param:func-name.param)
+  "auth:func-name"    -> auth policy             (per-function override)
+  "auth:__default__"  -> default auth policy      (world-level default)
 """
 from __future__ import annotations
 
@@ -58,12 +71,20 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
     Returns a flat dict suitable for the package-docs custom section.
     Only captures /// (triple-slash) doc comments — plain // comments
     such as section dividers are silently ignored.
+
+    @auth annotations are extracted into "auth:func-name" keys.
+    @default-auth annotations (on the world line) become "auth:__default__".
     """
     docs: dict[str, str] = {}
     pending_doc_lines: list[str] = []
+    pending_auth: str | None = None
     current_func: str | None = None
     in_func_params = False
     brace_depth = 0
+
+    # Regex for @auth and @default-auth annotations
+    auth_re = re.compile(r"^@auth\s+(.+)$")
+    default_auth_re = re.compile(r"^@default-auth\s+(.+)$")
 
     for raw_line in wit_text.splitlines():
         line = raw_line.strip()
@@ -73,6 +94,18 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
             comment = line[3:]
             if comment.startswith(" "):
                 comment = comment[1:]
+
+            # Check for @auth or @default-auth annotations
+            auth_match = auth_re.match(comment.strip())
+            default_auth_match = default_auth_re.match(comment.strip())
+
+            if default_auth_match:
+                docs["auth:__default__"] = default_auth_match.group(1).strip()
+                continue
+            elif auth_match:
+                pending_auth = auth_match.group(1).strip()
+                continue
+
             pending_doc_lines.append(comment)
             continue
 
@@ -90,11 +123,13 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
         if re.match(r"(enum|record|variant|flags)\s+", line) and "{" in line:
             # Type docs are not used in MCP — just clear
             pending_doc_lines.clear()
+            pending_auth = None
             brace_depth += line.count("{") - line.count("}")
             continue
 
         if brace_depth > 0:
             pending_doc_lines.clear()
+            pending_auth = None
             brace_depth += line.count("{") - line.count("}")
             continue
 
@@ -104,7 +139,10 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
             func_name = export_match.group(1)
             if pending_doc_lines:
                 docs[func_name] = "\n".join(pending_doc_lines).strip()
+            if pending_auth:
+                docs[f"auth:{func_name}"] = pending_auth
             pending_doc_lines.clear()
+            pending_auth = None
 
             # Check if the func signature closes on this line
             if ");" in line or ") ->" in line:
@@ -123,14 +161,23 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
                     param_name = param_match.group(1)
                     docs[f"{current_func}.{param_name}"] = "\n".join(pending_doc_lines).strip()
             pending_doc_lines.clear()
+            pending_auth = None
 
             if ");" in line or ") ->" in line:
                 current_func = None
                 in_func_params = False
             continue
 
+        # World definition — attach any pending @default-auth
+        # (already handled above in the /// parsing, but clear state)
+        if re.match(r"world\s+", line):
+            pending_doc_lines.clear()
+            pending_auth = None
+            continue
+
         # Any other non-blank, non-comment line clears accumulated docs
         pending_doc_lines.clear()
+        pending_auth = None
 
     return docs
 
