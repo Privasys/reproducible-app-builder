@@ -47,9 +47,9 @@ jobs:
       - name: Checkout app repository
         run: |
           git clone --depth 1 --branch "${{ inputs.commit }}" \
-            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ inputs.repo_url }}.git" app 2>/dev/null \
+            "https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ inputs.repo_url }}.git" app 2>/dev/null \
           || {
-            git clone "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ inputs.repo_url }}.git" app
+            git clone "https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ inputs.repo_url }}.git" app
             cd app && git checkout "${{ inputs.commit }}" && cd ..
           }
 
@@ -99,5 +99,5 @@ jobs:
               "status": "failed",
               "run_id": ${{ github.run_id }},
               "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-              "error": "Container build failed — check the workflow run for details"
+              "error": "Container build failed - check the workflow run for details"
             }' || true
