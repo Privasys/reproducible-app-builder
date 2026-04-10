@@ -2,7 +2,7 @@ name: Cleanup old container images
 
 on:
   schedule:
-    - cron: "0 * * * *" # every hour
+    - cron: "0 */6 * * *" # every 6 hours (no need to run hourly)
   workflow_dispatch:
 
 permissions:
@@ -30,23 +30,37 @@ jobs:
               // Only clean up packages under the apps/ namespace
               if (!pkg.name.startsWith('apps/')) continue;
 
-              const versions = await github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg({
-                org: 'Privasys',
-                package_type: 'container',
-                package_name: pkg.name,
-                per_page: 100,
-              });
+              // URL-encode the package name (e.g. "apps/my-app" → "apps%2Fmy-app")
+              // The Octokit client doesn't encode slashes in path parameters.
+              const encodedName = encodeURIComponent(pkg.name);
+
+              let versions;
+              try {
+                versions = await github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg({
+                  org: 'Privasys',
+                  package_type: 'container',
+                  package_name: encodedName,
+                  per_page: 100,
+                });
+              } catch (e) {
+                console.log(`Skipping ${pkg.name}: ${e.message}`);
+                continue;
+              }
 
               for (const version of versions.data) {
                 const createdAt = new Date(version.created_at).getTime();
                 if (createdAt < cutoff) {
                   console.log(`Deleting ${pkg.name}:${version.id} (created ${version.created_at})`);
-                  await github.rest.packages.deletePackageVersionForOrg({
-                    org: 'Privasys',
-                    package_type: 'container',
-                    package_name: pkg.name,
-                    package_version_id: version.id,
-                  });
+                  try {
+                    await github.rest.packages.deletePackageVersionForOrg({
+                      org: 'Privasys',
+                      package_type: 'container',
+                      package_name: encodedName,
+                      package_version_id: version.id,
+                    });
+                  } catch (e) {
+                    console.log(`  Failed to delete ${pkg.name}:${version.id}: ${e.message}`);
+                  }
                 }
               }
             }
