@@ -15,6 +15,7 @@ The script parses every .wit file under <wit-dir> and extracts:
   - inline parameter descriptions      ("func-name.param" -> param doc)
   - @auth annotations on exports       ("auth:func-name"  -> policy)
   - @default-auth on world definition  ("auth:__default__" -> policy)
+  - @config-api on a single export     ("config-api"      -> func-name)
 
 Plain // comments (e.g. section dividers) are ignored — only /// is captured.
 
@@ -22,9 +23,16 @@ Plain // comments (e.g. section dividers) are ignored — only /// is captured.
   /// @auth public           — no authentication required
   /// @auth authenticated    — any authenticated caller
   /// @auth role(role-name)  — caller must have the named role(s)
+  /// @auth owner            — restricted to the app owner (deployer)
 
 @default-auth sets the world-level default for unannotated exports:
   /// @default-auth authenticated
+
+@config-api marks the *single* export that initialises the app. While
+the app is unconfigured all other exports are blocked by the runtime
+freeze gate; the marked function is implicitly owner-only and any
+@auth annotation on it is ignored. At most one @config-api function
+may be declared per world.
 
 The output JSON uses flat keys consumed by normalise_package_docs():
   "func-name"         -> function description    (normalised to func:func-name)
@@ -74,17 +82,20 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
 
     @auth annotations are extracted into "auth:func-name" keys.
     @default-auth annotations (on the world line) become "auth:__default__".
+    @config-api on a function becomes "config-api" -> "<func-name>".
     """
     docs: dict[str, str] = {}
     pending_doc_lines: list[str] = []
     pending_auth: str | None = None
+    pending_config_api: bool = False
     current_func: str | None = None
     in_func_params = False
     brace_depth = 0
 
-    # Regex for @auth and @default-auth annotations
+    # Regex for @auth, @default-auth and @config-api annotations
     auth_re = re.compile(r"^@auth\s+(.+)$")
     default_auth_re = re.compile(r"^@default-auth\s+(.+)$")
+    config_api_re = re.compile(r"^@config-api\s*$")
 
     for raw_line in wit_text.splitlines():
         line = raw_line.strip()
@@ -105,6 +116,9 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
             elif auth_match:
                 pending_auth = auth_match.group(1).strip()
                 continue
+            elif config_api_re.match(comment.strip()):
+                pending_config_api = True
+                continue
 
             pending_doc_lines.append(comment)
             continue
@@ -124,12 +138,14 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
             # Type docs are not used in MCP — just clear
             pending_doc_lines.clear()
             pending_auth = None
+            pending_config_api = False
             brace_depth += line.count("{") - line.count("}")
             continue
 
         if brace_depth > 0:
             pending_doc_lines.clear()
             pending_auth = None
+            pending_config_api = False
             brace_depth += line.count("{") - line.count("}")
             continue
 
@@ -141,8 +157,18 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
                 docs[func_name] = "\n".join(pending_doc_lines).strip()
             if pending_auth:
                 docs[f"auth:{func_name}"] = pending_auth
+            if pending_config_api:
+                if "config-api" in docs and docs["config-api"] != func_name:
+                    raise ValueError(
+                        f"@config-api may be applied to at most one export per world; "
+                        f"already set to '{docs['config-api']}', cannot also set '{func_name}'"
+                    )
+                docs["config-api"] = func_name
+                # @config-api implies owner-only auth; override any @auth.
+                docs[f"auth:{func_name}"] = "owner"
             pending_doc_lines.clear()
             pending_auth = None
+            pending_config_api = False
 
             # Check if the func signature closes on this line
             if ");" in line or ") ->" in line:
@@ -162,6 +188,7 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
                     docs[f"{current_func}.{param_name}"] = "\n".join(pending_doc_lines).strip()
             pending_doc_lines.clear()
             pending_auth = None
+            pending_config_api = False
 
             if ");" in line or ") ->" in line:
                 current_func = None
@@ -173,11 +200,13 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
         if re.match(r"world\s+", line):
             pending_doc_lines.clear()
             pending_auth = None
+            pending_config_api = False
             continue
 
         # Any other non-blank, non-comment line clears accumulated docs
         pending_doc_lines.clear()
         pending_auth = None
+        pending_config_api = False
 
     return docs
 
