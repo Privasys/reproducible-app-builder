@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Delete container versions older than 7 days
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           # GITHUB_TOKEN cannot list/delete org-wide packages (400 "Invalid
           # argument"); requires a classic PAT with read:packages + delete:packages.
