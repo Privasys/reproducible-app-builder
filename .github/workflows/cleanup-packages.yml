@@ -12,16 +12,49 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete container versions older than 7 days
+      - name: Delete unreferenced container versions older than 7 days
         uses: actions/github-script@v8
         with:
           # GITHUB_TOKEN cannot list/delete org-wide packages (400 "Invalid
           # argument"); requires a classic PAT with read:packages + delete:packages.
           github-token: ${{ secrets.PACKAGES_PAT }}
           script: |
+            // REFERENCE-SAFE cleanup. The old age-only sweep deleted
+            // untagged child manifests that tagged multi-arch indexes still
+            // referenced, so a platform-pinned digest 404'd at pull
+            // (container-app-lightpanda v0.1.0, 2026-07-03). Rules now:
+            //   - a TAGGED version is never deleted (platform app_versions
+            //     pin tags/digests indefinitely; images are small);
+            //   - an UNTAGGED version is deleted only when it is older than
+            //     the cutoff AND no kept (tagged) manifest references it.
             const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000; // 7 days ago
+            const token = '${{ secrets.PACKAGES_PAT }}';
 
-            // List all container packages in the org
+            // Fetch a manifest by digest and return the child MANIFEST
+            // digests it references (only manifests appear as package
+            // versions, so those are what the keep-set must protect).
+            // ghcr.io accepts a base64-encoded PAT as the Bearer token.
+            async function referencedDigests(pkgName, digest) {
+              const resp = await fetch(`https://ghcr.io/v2/privasys/${pkgName}/manifests/${digest}`, {
+                headers: {
+                  Authorization: `Bearer ${Buffer.from(token).toString('base64')}`,
+                  Accept: [
+                    'application/vnd.oci.image.index.v1+json',
+                    'application/vnd.docker.distribution.manifest.list.v2+json',
+                    'application/vnd.oci.image.manifest.v1+json',
+                    'application/vnd.docker.distribution.manifest.v2+json',
+                  ].join(', '),
+                },
+              });
+              if (!resp.ok) {
+                console.log(`  WARN: manifest fetch ${pkgName}@${digest} -> ${resp.status}; keeping conservatively`);
+                return null; // signal "unknown" so the caller fails safe
+              }
+              const body = await resp.json().catch(() => null);
+              if (!body) return null;
+              return (body.manifests ?? []).map((m) => m.digest).filter(Boolean);
+            }
+
             const packages = await github.rest.packages.listPackagesForOrganization({
               org: 'Privasys',
               package_type: 'container',
@@ -33,7 +66,6 @@ jobs:
               if (!pkg.name.startsWith('apps/')) continue;
 
               // URL-encode the package name (e.g. "apps/my-app" → "apps%2Fmy-app")
-              // The Octokit client doesn't encode slashes in path parameters.
               const encodedName = encodeURIComponent(pkg.name);
 
               let versions;
@@ -49,20 +81,41 @@ jobs:
                 continue;
               }
 
+              // Pass 1: what must be kept — every tagged version, plus every
+              // digest a tagged manifest (index) references. A failed
+              // manifest fetch aborts deletion for the whole package: an
+              // incomplete keep-set must never cause a deletion.
+              const keep = new Set();
+              let keepComplete = true;
+              for (const v of versions.data) {
+                const tags = v.metadata?.container?.tags ?? [];
+                if (tags.length === 0) continue;
+                keep.add(v.name); // v.name is the manifest digest
+                const children = await referencedDigests(pkg.name, v.name);
+                if (children === null) { keepComplete = false; break; }
+                for (const child of children) keep.add(child);
+              }
+              if (!keepComplete) {
+                console.log(`Skipping ${pkg.name}: could not build a complete keep-set`);
+                continue;
+              }
+
+              // Pass 2: delete old, untagged, unreferenced versions.
               for (const version of versions.data) {
                 const createdAt = new Date(version.created_at).getTime();
-                if (createdAt < cutoff) {
-                  console.log(`Deleting ${pkg.name}:${version.id} (created ${version.created_at})`);
-                  try {
-                    await github.rest.packages.deletePackageVersionForOrg({
-                      org: 'Privasys',
-                      package_type: 'container',
-                      package_name: encodedName,
-                      package_version_id: version.id,
-                    });
-                  } catch (e) {
-                    console.log(`  Failed to delete ${pkg.name}:${version.id}: ${e.message}`);
-                  }
+                const tags = version.metadata?.container?.tags ?? [];
+                if (createdAt >= cutoff) continue;
+                if (tags.length > 0 || keep.has(version.name)) continue;
+                console.log(`Deleting ${pkg.name} ${version.name} (untagged, unreferenced, created ${version.created_at})`);
+                try {
+                  await github.rest.packages.deletePackageVersionForOrg({
+                    org: 'Privasys',
+                    package_type: 'container',
+                    package_name: encodedName,
+                    package_version_id: version.id,
+                  });
+                } catch (e) {
+                  console.log(`  Failed to delete ${pkg.name} ${version.name}: ${e.message}`);
                 }
               }
             }
