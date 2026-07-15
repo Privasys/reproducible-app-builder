@@ -90,15 +90,17 @@ jobs:
               // Only clean up packages under the apps/ namespace
               if (!pkg.name.startsWith('apps/')) continue;
 
-              // URL-encode the package name (e.g. "apps/my-app" → "apps%2Fmy-app")
-              const encodedName = encodeURIComponent(pkg.name);
-
+              // Pass the package name RAW: octokit URL-encodes path
+              // parameters itself, so pre-encoding double-encodes the slash
+              // ("apps%252Fmy-app") and every versions call 404s "Package not
+              // found" — the cleanup silently no-oped on the whole apps/*
+              // namespace (observed 2026-07-15, run 29453013039).
               let versions;
               try {
                 versions = await github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg, {
                   org: 'Privasys',
                   package_type: 'container',
-                  package_name: encodedName,
+                  package_name: pkg.name,
                   per_page: 100,
                 });
               } catch (e) {
@@ -149,7 +151,7 @@ jobs:
                   await github.rest.packages.deletePackageVersionForOrg({
                     org: 'Privasys',
                     package_type: 'container',
-                    package_name: encodedName,
+                    package_name: pkg.name,
                     package_version_id: version.id,
                   });
                 } catch (e) {
