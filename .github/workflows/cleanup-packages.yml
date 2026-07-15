@@ -12,28 +12,51 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete unreferenced container versions older than 7 days
+      - name: Delete unreferenced container versions older than 30 days
         uses: actions/github-script@v8
         with:
           # GITHUB_TOKEN cannot list/delete org-wide packages (400 "Invalid
           # argument"); requires a classic PAT with read:packages + delete:packages.
           github-token: ${{ secrets.PACKAGES_PAT }}
           script: |
-            // REFERENCE-SAFE cleanup. The old age-only sweep deleted
-            // untagged child manifests that tagged multi-arch indexes still
-            // referenced, so a platform-pinned digest 404'd at pull
-            // (container-app-lightpanda v0.1.0, 2026-07-03). Rules now:
-            //   - a TAGGED version is never deleted (platform app_versions
-            //     pin tags/digests indefinitely; images are small);
-            //   - an UNTAGGED version is deleted only when it is older than
-            //     the cutoff AND no kept (tagged) manifest references it.
-            const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000; // 7 days ago
+            // REACHABILITY-SAFE cleanup. Two incidents shaped these rules:
+            //
+            //   2026-07-03  the age-only sweep deleted untagged child manifests
+            //               that tagged multi-arch indexes still referenced
+            //               (container-app-lightpanda v0.1.0 unpullable).
+            //   2026-07-15  page-1-only version listing meant a tagged index
+            //               beyond the first 100 versions was invisible to the
+            //               keep-set, so its children were swept — every
+            //               lightpanda tag broke (index present, children 404).
+            //
+            // Rules:
+            //   - EVERYTHING is paginated. An incomplete view must never exist.
+            //   - A TAGGED version is never deleted (platform app_versions pin
+            //     tags/digests indefinitely; images are small).
+            //   - A version younger than the cutoff is never deleted.
+            //   - Everything REACHABLE from a kept version (index -> child
+            //     manifest references, transitively) is kept, whether or not
+            //     the child is tagged. A child must never outlive-or-predecease
+            //     its index: either the whole image survives or the whole image
+            //     goes in the same run.
+            //   - Any fetch failure aborts deletion for the whole package.
+            //
+            // Residual risk (accepted, documented): the platform pins images BY
+            // DIGEST in app_versions. If CI re-uses a tag, the older build's
+            // index goes untagged and — after the cutoff — is deleted together
+            // with its children, breaking redeploys of platform versions that
+            // pinned it. The registry cannot know the platform's pin set; the
+            // 30-day cutoff (matching GitHub's deleted-version restore window)
+            // is the safety margin. If that proves too short, the real fix is a
+            // pin feed from the management service, not a longer cutoff.
+            const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000; // 30 days ago
             const token = '${{ secrets.PACKAGES_PAT }}';
 
-            // Fetch a manifest by digest and return the child MANIFEST
-            // digests it references (only manifests appear as package
-            // versions, so those are what the keep-set must protect).
-            // ghcr.io accepts a base64-encoded PAT as the Bearer token.
+            // Fetch a manifest by digest and return the child MANIFEST digests
+            // it references (only manifests appear as package versions, so those
+            // are what reachability must protect). Plain image manifests return
+            // an empty list. ghcr.io accepts a base64-encoded PAT as the Bearer
+            // token. Returns null on any failure so the caller fails safe.
             async function referencedDigests(pkgName, digest) {
               const resp = await fetch(`https://ghcr.io/v2/privasys/${pkgName}/manifests/${digest}`, {
                 headers: {
@@ -47,21 +70,23 @@ jobs:
                 },
               });
               if (!resp.ok) {
-                console.log(`  WARN: manifest fetch ${pkgName}@${digest} -> ${resp.status}; keeping conservatively`);
-                return null; // signal "unknown" so the caller fails safe
+                console.log(`  WARN: manifest fetch ${pkgName}@${digest} -> ${resp.status}`);
+                return null;
               }
               const body = await resp.json().catch(() => null);
               if (!body) return null;
               return (body.manifests ?? []).map((m) => m.digest).filter(Boolean);
             }
 
-            const packages = await github.rest.packages.listPackagesForOrganization({
+            // Paginated: every package, every version. github.paginate walks
+            // all pages; per_page just sizes the requests.
+            const packages = await github.paginate(github.rest.packages.listPackagesForOrganization, {
               org: 'Privasys',
               package_type: 'container',
               per_page: 100,
             });
 
-            for (const pkg of packages.data) {
+            for (const pkg of packages) {
               // Only clean up packages under the apps/ namespace
               if (!pkg.name.startsWith('apps/')) continue;
 
@@ -70,7 +95,7 @@ jobs:
 
               let versions;
               try {
-                versions = await github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg({
+                versions = await github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg, {
                   org: 'Privasys',
                   package_type: 'container',
                   package_name: encodedName,
@@ -81,32 +106,45 @@ jobs:
                 continue;
               }
 
-              // Pass 1: what must be kept — every tagged version, plus every
-              // digest a tagged manifest (index) references. A failed
-              // manifest fetch aborts deletion for the whole package: an
-              // incomplete keep-set must never cause a deletion.
+              // Pass 1: seed the keep-set — every tagged version and every
+              // version younger than the cutoff.
               const keep = new Set();
-              let keepComplete = true;
-              for (const v of versions.data) {
+              for (const v of versions) {
                 const tags = v.metadata?.container?.tags ?? [];
-                if (tags.length === 0) continue;
-                keep.add(v.name); // v.name is the manifest digest
-                const children = await referencedDigests(pkg.name, v.name);
+                const createdAt = new Date(v.created_at).getTime();
+                if (tags.length > 0 || createdAt >= cutoff) keep.add(v.name); // v.name is the manifest digest
+              }
+
+              // Pass 2: expand to everything reachable from the keep-set
+              // (index -> children, transitively — a fixed point over the
+              // package's own versions). A failed manifest fetch aborts
+              // deletion for the whole package: an incomplete keep-set must
+              // never cause a deletion.
+              let keepComplete = true;
+              const expanded = new Set();
+              const queue = [...keep];
+              while (queue.length > 0) {
+                const digest = queue.pop();
+                if (expanded.has(digest)) continue;
+                expanded.add(digest);
+                const children = await referencedDigests(pkg.name, digest);
                 if (children === null) { keepComplete = false; break; }
-                for (const child of children) keep.add(child);
+                for (const child of children) {
+                  keep.add(child);
+                  queue.push(child);
+                }
               }
               if (!keepComplete) {
                 console.log(`Skipping ${pkg.name}: could not build a complete keep-set`);
                 continue;
               }
 
-              // Pass 2: delete old, untagged, unreferenced versions.
-              for (const version of versions.data) {
-                const createdAt = new Date(version.created_at).getTime();
-                const tags = version.metadata?.container?.tags ?? [];
-                if (createdAt >= cutoff) continue;
-                if (tags.length > 0 || keep.has(version.name)) continue;
-                console.log(`Deleting ${pkg.name} ${version.name} (untagged, unreferenced, created ${version.created_at})`);
+              // Pass 3: delete whatever is left — old, untagged, and not
+              // reachable from any kept version. An untagged old index and its
+              // children fall out together in the same run.
+              for (const version of versions) {
+                if (keep.has(version.name)) continue;
+                console.log(`Deleting ${pkg.name} ${version.name} (untagged, unreachable, created ${version.created_at})`);
                 try {
                   await github.rest.packages.deletePackageVersionForOrg({
                     org: 'Privasys',
