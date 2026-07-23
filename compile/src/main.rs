@@ -72,6 +72,13 @@ fn build_engine_config() -> Config {
     config.native_unwind_info(false);
     config.signals_based_traps(false);
 
+    // Fuel metering — compute billing's primary dimension. Must be enabled
+    // at BOTH compile time (here) and runtime (the enclave engine): a
+    // fuel-enabled runtime rejects a .cwasm compiled without fuel support,
+    // so this flag and the enclave's consume_fuel roll together (apps built
+    // before this flag need a rebuild to run on a fuel-enabled enclave).
+    config.consume_fuel(true);
+
     // ── SGX-appropriate limits ─────────────────────────────────
     config.memory_reservation(4 * 1024 * 1024);
     config.memory_guard_size(64 * 1024);
