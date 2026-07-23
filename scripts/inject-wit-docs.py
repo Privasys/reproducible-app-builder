@@ -16,6 +16,8 @@ The script parses every .wit file under <wit-dir> and extracts:
   - @auth annotations on exports       ("auth:func-name"  -> policy)
   - @default-auth on world definition  ("auth:__default__" -> policy)
   - @config-api on a single export     ("config-api"      -> func-name)
+  - @price annotations on exports      ("price:func-name" -> price rule JSON)
+  - @default-price on world definition ("price:__default__" -> price rule JSON)
 
 Plain // comments (e.g. section dividers) are ignored — only /// is captured.
 
@@ -33,6 +35,16 @@ the app is unconfigured all other exports are blocked by the runtime
 freeze gate; the marked function is implicitly owner-only and any
 @auth annotation on it is ignored. At most one @config-api function
 may be declared per world.
+
+@price declares a developer-set per-call API fee (x-privasys.price) as a
+JSON rule. The enclave folds it into the measured permissions (an attested
+price) and, on each successful call, the payer is debited and the owner
+credited 85% (platform 15%):
+  /// @price {"credits":10000}                                   — caller pays
+  /// @price {"credits":10000,"payer":"caller","free_for":["wallet"]}
+  /// @price {"credits":10000,"payer":"sponsor","sponsor_from":"rp-id"}
+The JSON is validated at build time — a malformed rule fails the build
+rather than shipping an app that silently runs unpriced.
 
 The output JSON uses flat keys consumed by normalise_package_docs():
   "func-name"         -> function description    (normalised to func:func-name)
@@ -87,15 +99,40 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
     docs: dict[str, str] = {}
     pending_doc_lines: list[str] = []
     pending_auth: str | None = None
+    pending_price: str | None = None
     pending_config_api: bool = False
     current_func: str | None = None
     in_func_params = False
     brace_depth = 0
 
-    # Regex for @auth, @default-auth and @config-api annotations
+    # Regex for @auth, @default-auth, @config-api and @price annotations
     auth_re = re.compile(r"^@auth\s+(.+)$")
     default_auth_re = re.compile(r"^@default-auth\s+(.+)$")
     config_api_re = re.compile(r"^@config-api\s*$")
+    price_re = re.compile(r"^@price\s+(.+)$")
+    default_price_re = re.compile(r"^@default-price\s+(.+)$")
+
+    def validate_price(raw: str, where: str) -> str:
+        """Validate a @price JSON rule at build time (fail fast on typos)."""
+        try:
+            rule = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"@price on {where}: invalid JSON ({e}): {raw}") from e
+        if not isinstance(rule, dict):
+            raise ValueError(f"@price on {where}: must be a JSON object: {raw}")
+        credits = rule.get("credits", 0)
+        if not isinstance(credits, int) or credits < 0:
+            raise ValueError(f"@price on {where}: 'credits' must be a non-negative integer")
+        payer = rule.get("payer", "caller")
+        if payer not in ("caller", "sponsor"):
+            raise ValueError(f"@price on {where}: 'payer' must be 'caller' or 'sponsor'")
+        if payer == "sponsor" and not rule.get("sponsor_from"):
+            raise ValueError(f"@price on {where}: payer 'sponsor' requires 'sponsor_from'")
+        free_for = rule.get("free_for", [])
+        if not isinstance(free_for, list) or any(not isinstance(c, str) for c in free_for):
+            raise ValueError(f"@price on {where}: 'free_for' must be a list of strings")
+        # Re-serialise compactly so the measured annotation is canonical.
+        return json.dumps(rule, ensure_ascii=False, separators=(",", ":"))
 
     for raw_line in wit_text.splitlines():
         line = raw_line.strip()
@@ -106,15 +143,25 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
             if comment.startswith(" "):
                 comment = comment[1:]
 
-            # Check for @auth or @default-auth annotations
+            # Check for @auth / @default-auth / @price / @default-price
             auth_match = auth_re.match(comment.strip())
             default_auth_match = default_auth_re.match(comment.strip())
+            price_match = price_re.match(comment.strip())
+            default_price_match = default_price_re.match(comment.strip())
 
             if default_auth_match:
                 docs["auth:__default__"] = default_auth_match.group(1).strip()
                 continue
+            elif default_price_match:
+                docs["price:__default__"] = validate_price(
+                    default_price_match.group(1).strip(), "world default"
+                )
+                continue
             elif auth_match:
                 pending_auth = auth_match.group(1).strip()
+                continue
+            elif price_match:
+                pending_price = price_match.group(1).strip()
                 continue
             elif config_api_re.match(comment.strip()):
                 pending_config_api = True
@@ -138,6 +185,7 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
             # Type docs are not used in MCP — just clear
             pending_doc_lines.clear()
             pending_auth = None
+            pending_price = None
             pending_config_api = False
             brace_depth += line.count("{") - line.count("}")
             continue
@@ -145,6 +193,7 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
         if brace_depth > 0:
             pending_doc_lines.clear()
             pending_auth = None
+            pending_price = None
             pending_config_api = False
             brace_depth += line.count("{") - line.count("}")
             continue
@@ -157,6 +206,8 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
                 docs[func_name] = "\n".join(pending_doc_lines).strip()
             if pending_auth:
                 docs[f"auth:{func_name}"] = pending_auth
+            if pending_price:
+                docs[f"price:{func_name}"] = validate_price(pending_price, f"'{func_name}'")
             if pending_config_api:
                 if "config-api" in docs and docs["config-api"] != func_name:
                     raise ValueError(
@@ -168,6 +219,7 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
                 docs[f"auth:{func_name}"] = "owner"
             pending_doc_lines.clear()
             pending_auth = None
+            pending_price = None
             pending_config_api = False
 
             # Check if the func signature closes on this line
@@ -188,6 +240,7 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
                     docs[f"{current_func}.{param_name}"] = "\n".join(pending_doc_lines).strip()
             pending_doc_lines.clear()
             pending_auth = None
+            pending_price = None
             pending_config_api = False
 
             if ");" in line or ") ->" in line:
@@ -200,12 +253,14 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
         if re.match(r"world\s+", line):
             pending_doc_lines.clear()
             pending_auth = None
+            pending_price = None
             pending_config_api = False
             continue
 
         # Any other non-blank, non-comment line clears accumulated docs
         pending_doc_lines.clear()
         pending_auth = None
+        pending_price = None
         pending_config_api = False
 
     return docs
