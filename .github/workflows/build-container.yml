@@ -1,5 +1,10 @@
 name: Build container image
 
+# The run title is the only part of an Actions run a signed-out visitor is
+# served without JavaScript, and by default it names the BUILDER's commit
+# rather than the app's. See build-cwasm.yml.
+run-name: "Build container: ${{ inputs.repo_url }}@${{ inputs.commit }}"
+
 on:
   workflow_dispatch:
     inputs:
@@ -78,13 +83,22 @@ jobs:
         if: success()
         run: |
           DIGEST="${{ steps.build.outputs.digest }}"
-          echo "## Reproducible Build" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Container image digest** | \`${DIGEST}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Image** | \`ghcr.io/privasys/apps/${{ inputs.app_name }}:${{ inputs.commit }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Commit** | [${{ inputs.commit }}](https://github.com/${{ inputs.repo_url }}/commit/${{ inputs.commit }}) |" >> "$GITHUB_STEP_SUMMARY"
+          # States what was built and from what, for a reader who is not
+          # signed in to GitHub. The digest below is the value attested as
+          # OID 3.2 on the running app's certificate.
+          {
+            echo "## Reproducible build"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| **Repository** | [${{ inputs.repo_url }}](https://github.com/${{ inputs.repo_url }}) |"
+            echo "| **Commit** | [${{ inputs.commit }}](https://github.com/${{ inputs.repo_url }}/commit/${{ inputs.commit }}) |"
+            echo "| **Container image digest** | \`${DIGEST}\` |"
+            echo "| **Image** | \`ghcr.io/privasys/apps/${{ inputs.app_name }}:${{ inputs.commit }}\` |"
+            echo ""
+            echo "The digest above is the workload hash attested by the enclave"
+            echo "(OID 1.3.6.1.4.1.65230.4.2) when this build runs."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Notify success
         if: success()
