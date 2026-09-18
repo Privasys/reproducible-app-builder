@@ -7,6 +7,7 @@ on:
       - 'compile/**'
       - 'scripts/**'
       - 'Dockerfile'
+      - '.github/workflows/build-image.yml'
   workflow_dispatch:
 
 env:
@@ -18,6 +19,20 @@ jobs:
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # One image per wasmtime line the Enclave OS runtimes run. A .cwasm
+        # only loads on the wasmtime it was compiled with, so build-cwasm.yml
+        # picks the image of the target runtime's line. `latest` stays on the
+        # line the runtimes in production run, for callers that name none.
+        include:
+          - line: "47"
+            fork_tag: privasys-v0.2.0
+            latest: true
+          - line: "48"
+            fork_tag: privasys-v0.3.0
+            latest: false
     steps:
       - uses: actions/checkout@v6
 
@@ -32,14 +47,32 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Build and push
+        id: push
         uses: docker/build-push-action@v7
         with:
           context: .
           push: true
+          build-args: |
+            WASMTIME_FORK_TAG=${{ matrix.fork_tag }}
           secrets: |
             github_token=${{ secrets.GH_PAT }}
           tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ env.IMAGE }}:wasmtime-${{ matrix.line }}
+            ${{ env.IMAGE }}:wasmtime-${{ matrix.line }}-${{ github.sha }}
+            ${{ matrix.latest && format('{0}:latest', env.IMAGE) || '' }}
+            ${{ matrix.latest && format('{0}:{1}', env.IMAGE, github.sha) || '' }}
+          cache-from: type=gha,scope=wasmtime-${{ matrix.line }}
+          cache-to: type=gha,mode=max,scope=wasmtime-${{ matrix.line }}
+
+      - name: Summary
+        run: |
+          {
+            echo "## wasmtime ${{ matrix.line }}"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| **Image** | \`${{ env.IMAGE }}:wasmtime-${{ matrix.line }}\` |"
+            echo "| **Digest** | \`${{ steps.push.outputs.digest }}\` |"
+            echo "| **Wasmtime fork tag** | \`${{ matrix.fork_tag }}\` |"
+            echo "| **Also :latest** | ${{ matrix.latest }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
