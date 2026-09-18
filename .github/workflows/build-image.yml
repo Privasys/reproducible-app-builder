@@ -29,10 +29,10 @@ jobs:
         include:
           - line: "47"
             fork_tag: privasys-v0.2.0
-            latest: true
+            latest: false
           - line: "48"
             fork_tag: privasys-v0.3.0
-            latest: false
+            latest: true
     steps:
       - uses: actions/checkout@v6
 

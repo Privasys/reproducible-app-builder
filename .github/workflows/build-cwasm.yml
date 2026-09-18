@@ -29,7 +29,7 @@ on:
       wasmtime:
         description: "Wasmtime line (major version) of the runtime the .cwasm is for, e.g. 47 or 48"
         required: false
-        default: "47"
+        default: "48"
         type: string
 
 jobs:
