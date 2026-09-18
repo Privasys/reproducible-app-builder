@@ -18,6 +18,7 @@ The script parses every .wit file under <wit-dir> and extracts:
   - @config-api on a single export     ("config-api"      -> func-name)
   - @price annotations on exports      ("price:func-name" -> price rule JSON)
   - @default-price on world definition ("price:__default__" -> price rule JSON)
+  - @egress on the world definition    ("egress"          -> JSON list of hosts)
 
 Plain // comments (e.g. section dividers) are ignored — only /// is captured.
 
@@ -45,6 +46,17 @@ credited 85% (platform 15%):
   /// @price {"credits":10000,"payer":"sponsor","sponsor_from":"rp-id"}
 The JSON is validated at build time — a malformed rule fails the build
 rather than shipping an app that silently runs unpriced.
+
+@egress declares the hosts the app may open outbound connections to, over
+both the https host function and raw WASI sockets. The enclave folds the
+list into the measured permissions, so anyone verifying the app can read
+exactly where it is allowed to connect. Entries are space-separated and the
+annotation may repeat; each is a host, `*.` followed by a domain (any
+subdomain, not the domain itself), or either of those with `:port`:
+  /// @egress api.search.brave.com
+  /// @egress *.googleapis.com api.example.org:8443
+  /// @egress none            — the app makes no outbound connections
+With no @egress the app may connect anywhere, as before.
 
 The output JSON uses flat keys consumed by normalise_package_docs():
   "func-name"         -> function description    (normalised to func:func-name)
@@ -111,6 +123,8 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
     config_api_re = re.compile(r"^@config-api\s*$")
     price_re = re.compile(r"^@price\s+(.+)$")
     default_price_re = re.compile(r"^@default-price\s+(.+)$")
+    egress_re = re.compile(r"^@egress\s+(.+)$")
+    egress: list[str] | None = None
 
     def validate_price(raw: str, where: str) -> str:
         """Validate a @price JSON rule at build time (fail fast on typos)."""
@@ -148,6 +162,13 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
             default_auth_match = default_auth_re.match(comment.strip())
             price_match = price_re.match(comment.strip())
             default_price_match = default_price_re.match(comment.strip())
+
+            egress_match = egress_re.match(comment.strip())
+            if egress_match:
+                if egress is None:
+                    egress = []
+                egress.extend(parse_egress(egress_match.group(1)))
+                continue
 
             if default_auth_match:
                 docs["auth:__default__"] = default_auth_match.group(1).strip()
@@ -263,7 +284,43 @@ def parse_wit_docs(wit_text: str) -> dict[str, str]:
         pending_price = None
         pending_config_api = False
 
+    if egress is not None:
+        docs["egress"] = json.dumps(sorted(set(egress)), separators=(",", ":"))
+
     return docs
+
+
+# A DNS label: letters, digits and inner hyphens.
+_LABEL = r"(?!-)[a-z0-9-]{1,63}(?<!-)"
+_EGRESS_ENTRY_RE = re.compile(
+    rf"^(\*\.)?{_LABEL}(\.{_LABEL})*(:(\d{{1,5}}))?$"
+)
+
+
+def parse_egress(raw: str) -> list[str]:
+    """Parse and validate one @egress line (fail the build on a bad entry).
+
+    `none` alone yields an empty list, which the enclave reads as "no outbound
+    connections". It cannot be combined with hosts.
+    """
+    entries = raw.lower().split()
+    if entries == ["none"]:
+        return []
+    if "none" in entries:
+        raise ValueError(f"@egress: 'none' cannot be combined with hosts: {raw}")
+    for e in entries:
+        m = _EGRESS_ENTRY_RE.match(e)
+        if not m:
+            raise ValueError(
+                f"@egress: invalid entry {e!r}; expected host, *.domain, "
+                f"optionally with :port"
+            )
+        port = m.group(4)
+        if port is not None and not 1 <= int(port) <= 65535:
+            raise ValueError(f"@egress: port out of range in {e!r}")
+        if e.startswith("*.") and "." not in e[2:].split(":")[0]:
+            raise ValueError(f"@egress: wildcard needs a domain with a dot: {e!r}")
+    return entries
 
 
 def inject_package_docs(wasm_path: Path, docs: dict[str, str], output_path: Path) -> None:
@@ -311,6 +368,13 @@ def main() -> None:
     for wit_file in sorted(wit_dir.glob("*.wit")):
         wit_text = wit_file.read_text(encoding="utf-8")
         file_docs = parse_wit_docs(wit_text)
+        # @egress may be declared in more than one file: take the union.
+        if "egress" in file_docs and "egress" in all_docs:
+            a, b = json.loads(all_docs["egress"]), json.loads(file_docs["egress"])
+            if (a == []) != (b == []):
+                raise ValueError(f"@egress none in one file contradicts hosts in another ({wit_file.name})")
+            merged = set(a) | set(b)
+            file_docs["egress"] = json.dumps(sorted(merged), separators=(",", ":"))
         all_docs.update(file_docs)
 
     if not all_docs:
