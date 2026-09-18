@@ -18,7 +18,7 @@ path = "src/main.rs"
 # and the Engine configuration, so both MUST stay in sync. Pin the immutable
 # release tag (not the moving `sgx` branch) so a builder-image rebuild always
 # produces artefacts for the exact runtime the enclave ships.
-wasmtime = { git = "https://github.com/Privasys/wasmtime", tag = "privasys-v0.3.0", default-features = false, features = [
+wasmtime = { git = "https://github.com/Privasys/wasmtime", tag = "privasys-v0.2.0", default-features = false, features = [
     "cranelift",
     "component-model",
     "runtime",
