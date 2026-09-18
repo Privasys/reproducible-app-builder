@@ -5,7 +5,7 @@ name: Build .cwasm
 # rather than the app's. Putting the app repo and commit here means anyone
 # following a "build run" link can see what was built before they read
 # anything else.
-run-name: "Build .cwasm: ${{ inputs.repo_url }}@${{ inputs.commit }}"
+run-name: "Build .cwasm: ${{ inputs.repo_url }}@${{ inputs.commit }} (wasmtime ${{ inputs.wasmtime || '47' }})"
 
 on:
   workflow_dispatch:
@@ -26,12 +26,28 @@ on:
         description: "URL to POST build results to"
         required: true
         type: string
+      wasmtime:
+        description: "Wasmtime line (major version) of the runtime the .cwasm is for, e.g. 47 or 48"
+        required: false
+        default: "47"
+        type: string
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # A .cwasm only loads on the wasmtime it was compiled with, so each
+      # wasmtime line has its own builder image (see build-image.yml).
+      WASMTIME_LINE: ${{ inputs.wasmtime || '47' }}
     steps:
+      - name: Check the wasmtime line
+        run: |
+          case "$WASMTIME_LINE" in
+            ""|*[!0-9]*) echo "::error::wasmtime must be a major version number, got '$WASMTIME_LINE'"; exit 1 ;;
+          esac
+          echo "BUILDER_TAG=ghcr.io/privasys/reproducible-app-builder:wasmtime-$WASMTIME_LINE" >> "$GITHUB_ENV"
+
       - name: Notify running
         run: |
           curl -sf -X POST "${{ inputs.callback_url }}" \
@@ -47,7 +63,7 @@ jobs:
         id: pull
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin 2>/dev/null
-          docker pull ghcr.io/privasys/reproducible-app-builder:latest &
+          docker pull "$BUILDER_TAG" &
           PULL_PID=$!
           git clone --depth 1 --branch "${{ inputs.commit }}" \
             "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ inputs.repo_url }}.git" app 2>/dev/null \
@@ -55,17 +71,24 @@ jobs:
             git clone "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ inputs.repo_url }}.git" app
             cd app && git checkout "${{ inputs.commit }}" && cd ..
           }
-          wait $PULL_PID
-          # Which builder produced this output: :latest is a moving tag, so the
-          # pinned digest is the only honest way to name the toolchain.
-          BUILDER=$(docker inspect --format='{{index .RepoDigests 0}}' \
-            ghcr.io/privasys/reproducible-app-builder:latest 2>/dev/null || true)
+          if ! wait $PULL_PID; then
+            echo "::error::no builder image for wasmtime $WASMTIME_LINE ($BUILDER_TAG)"
+            exit 1
+          fi
+          # Which builder produced this output: the tag moves, so the pinned
+          # digest is the only honest way to name the toolchain. Every step
+          # below runs that exact digest, never the tag.
+          BUILDER=$(docker inspect --format='{{index .RepoDigests 0}}' "$BUILDER_TAG")
+          FORK_TAG=$(docker run --rm "$BUILDER" cat /usr/local/share/enclave-os-wasm-compile/wasmtime-fork-tag 2>/dev/null || echo unknown)
           echo "builder=$BUILDER" >> "$GITHUB_OUTPUT"
+          echo "fork_tag=$FORK_TAG" >> "$GITHUB_OUTPUT"
+          echo "BUILDER=$BUILDER" >> "$GITHUB_ENV"
+          echo "Builder: $BUILDER (wasmtime $WASMTIME_LINE, fork $FORK_TAG)"
 
       - name: Build WASM component
         run: |
           docker run --rm -v "${{ github.workspace }}/app:/work" -w /work \
-            ghcr.io/privasys/reproducible-app-builder:latest \
+            "$BUILDER" \
             sh -c '
               if cargo component build --release 2>&1; then
                 echo "Built with cargo-component"
@@ -105,7 +128,7 @@ jobs:
             -v "${{ github.workspace }}/app:/work" \
             -v "${{ github.workspace }}:/out" \
             -w /work \
-            ghcr.io/privasys/reproducible-app-builder:latest \
+            "$BUILDER" \
             python3 /usr/local/bin/inject-wit-docs.py /work/wit "/work/${{ steps.find-wasm.outputs.wasm_file }}" --output-json /out/docs.json
 
       - name: AOT compile to .cwasm
@@ -114,7 +137,7 @@ jobs:
             -v "${{ github.workspace }}/app:/work" \
             -v "${{ github.workspace }}:/out" \
             -w /work \
-            ghcr.io/privasys/reproducible-app-builder:latest \
+            "$BUILDER" \
             enclave-os-wasm-compile "/work/${{ steps.find-wasm.outputs.wasm_file }}" -o /out/output.cwasm
 
       - name: Upload .cwasm artifact
@@ -148,6 +171,7 @@ jobs:
             echo "| **Commit** | [${{ inputs.commit }}](https://github.com/${{ inputs.repo_url }}/commit/${{ inputs.commit }}) |"
             echo "| **WASM module SHA-256** | \`$HASH\` |"
             echo "| **Size** | $SIZE bytes |"
+            echo "| **Wasmtime** | $WASMTIME_LINE (Privasys fork \`${{ steps.pull.outputs.fork_tag }}\`) |"
             echo "| **Builder image** | \`${{ steps.pull.outputs.builder }}\` |"
             echo ""
             echo "The SHA-256 above is the workload hash attested by the enclave"
@@ -167,7 +191,9 @@ jobs:
               'run_id': ${{ github.run_id }},
               'run_url': '$ARTIFACT_URL',
               'cwasm_hash': '${{ steps.hash.outputs.hash }}',
-              'cwasm_size': ${{ steps.hash.outputs.size }}
+              'cwasm_size': ${{ steps.hash.outputs.size }},
+              'wasmtime_line': '${{ env.WASMTIME_LINE }}',
+              'builder_image': '${{ steps.pull.outputs.builder }}'
           }
           docs_file = '$DOCS_FILE'
           try:

@@ -32,10 +32,18 @@ Reproducible build pipeline for Privasys Enclave OS applications. Compiles adopt
 | `commit` | Full commit SHA to build |
 | `build_id` | Management service build job UUID |
 | `callback_url` | URL to POST build status updates |
+| `wasmtime` | Wasmtime line (major version) of the target runtime, e.g. `47` or `48`. Optional, defaults to `47`. Selects the builder image `:wasmtime-<line>`; the callback reports it back as `wasmtime_line` with the pinned `builder_image` digest |
 
-## Builder image
+## Builder images
 
-The Docker image (`ghcr.io/privasys/reproducible-app-builder:latest`) is rebuilt automatically on push to `main` when files in `compile/`, `scripts/`, or `Dockerfile` change. It contains:
+A precompiled `.cwasm` only loads on the wasmtime release (and engine configuration) it was compiled with, so there is one builder image per wasmtime line the Enclave OS runtimes run:
+
+| Image | Wasmtime | Privasys fork tag |
+|-------|----------|-------------------|
+| `ghcr.io/privasys/reproducible-app-builder:wasmtime-47` (also `:latest`) | 47 | `privasys-v0.2.0` |
+| `ghcr.io/privasys/reproducible-app-builder:wasmtime-48` | 48 | `privasys-v0.3.0` |
+
+`build-image.yml` builds them as a matrix on push to `main` when files in `compile/`, `scripts/`, `Dockerfile` or the workflow change. The `Dockerfile` takes the fork tag as the `WASMTIME_FORK_TAG` build argument and substitutes it into `compile/Cargo.toml`; the image records it in `/usr/local/share/enclave-os-wasm-compile/wasmtime-fork-tag` and in the `org.privasys.wasmtime-fork-tag` label. A build run pins the image by digest and names both in its summary. Each image contains:
 
 - Rust stable toolchain with `wasm32-wasip1` and `wasm32-wasip2` targets
 - `cargo-component` for building WASM components
@@ -44,4 +52,4 @@ The Docker image (`ghcr.io/privasys/reproducible-app-builder:latest`) is rebuilt
 
 ## Keeping the compiler in sync
 
-The `compile/` directory must use the **exact same Wasmtime fork and Engine configuration** as the enclave runtime. When updating `enclave-os-mini`, also update the `compile/Cargo.toml` and `compile/src/main.rs` here.
+The `compile/` directory must use the **exact same Wasmtime fork and Engine configuration** as the enclave runtime. When an `enclave-os-mini` release moves to a new wasmtime fork tag, add a line to the matrix in `build-image.yml` (keep the lines still running somewhere) and keep `compile/src/main.rs` in step with the runtime engine configuration. `compile/Cargo.toml` pins the oldest supported line, which is also the image `:latest` points at.
